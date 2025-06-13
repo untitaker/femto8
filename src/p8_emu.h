@@ -10,6 +10,8 @@
 
 #ifdef __DA1470x__
 #define OS_FREERTOS
+#elif defined(FRAMEBUFFER)
+// Audio disabled for framebuffer mode
 #else
 #define SDL
 #define ENABLE_AUDIO
@@ -30,6 +32,9 @@
 #ifdef __DA1470x__
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 240
+#elif defined(FRAMEBUFFER)
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 128
 #else
 #define SCREEN_WIDTH 512
 #define SCREEN_HEIGHT 512
@@ -83,12 +88,21 @@
 #define PLAYER_COUNT 2
 #define STAT_FRAMERATE 7
 
+#ifdef SDL
 #define INPUT_LEFT SDLK_LEFT
 #define INPUT_RIGHT SDLK_RIGHT
 #define INPUT_UP SDLK_UP
 #define INPUT_DOWN SDLK_DOWN
 #define INPUT_ACTION1 SDLK_z
 #define INPUT_ACTION2 SDLK_x
+#else
+#define INPUT_LEFT 0x25
+#define INPUT_RIGHT 0x27
+#define INPUT_UP 0x26
+#define INPUT_DOWN 0x28
+#define INPUT_ACTION1 0x7A
+#define INPUT_ACTION2 0x78
+#endif
 
 enum
 {

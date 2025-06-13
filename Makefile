@@ -1,12 +1,12 @@
 TARGET_NAME := femto8
 TARGET := build/$(TARGET_NAME)
-INCFLAGS += -ISDL-1.2/include -Isrc -Isrc/data -Isrc/lua
-LDFLAGS += -LSDL-1.2/build/.libs
-LIBS += -Wl,-Bstatic -lSDL -lSDLmain -Wl,-Bdynamic -lpthread
+INCFLAGS += -Isrc -Isrc/data -Isrc/lua
+LDFLAGS += 
+LIBS += -lpthread
 fpic := -fPIC
 
-CFLAGS   += -Wall -DLUA_USE_POSIX $(fpic) $(INCFLAGS) -g
-CXXFLAGS += -Wall -DLUA_USE_POSIX $(fpic) $(INCFLAGS) -g
+CFLAGS   += -Wall -DLUA_USE_POSIX -DFRAMEBUFFER $(fpic) $(INCFLAGS) -g
+CXXFLAGS += -Wall -DLUA_USE_POSIX -DFRAMEBUFFER $(fpic) $(INCFLAGS) -g
 
 # Source directories
 SRC_DIRS := src src/lua src/data
