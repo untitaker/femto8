@@ -44,12 +44,12 @@
 
 #ifdef SDL
 // ARGB
-uint32_t m_colors[16] = {
+static const uint32_t m_colors[16] = {
     0x00000000, 0x001d2b53, 0x007e2553, 0x00008751, 0x00ab5236, 0x005f574f, 0x00c2c3c7, 0x00fff1e8,
     0x00ff004d, 0x00ffa300, 0x00ffec27, 0x0000e436, 0x0029adff, 0x0083769c, 0x00ff77a8, 0x00ffccaa};
 #elif defined(FRAMEBUFFER)
 /// RGB565, for reference see rayhunter's display code
-uint16_t m_colors[16] = {
+static const uint16_t m_colors[16] = {
     0x0000, // 0x000000 -> black
     0x1149, // 0x1d2b53 -> dark-blue
     0x7925, // 0x7e2553 -> dark-purple  
@@ -83,10 +83,8 @@ SDL_Surface *m_output = NULL;
 SDL_PixelFormat *m_format = NULL;
 #elif defined(FRAMEBUFFER)
 int m_fb_fd = -1;
-struct fb_var_screeninfo m_fb_vinfo;
-struct fb_fix_screeninfo m_fb_finfo;
 uint16_t *m_fb_ptr = NULL;
-long m_fb_screensize = 0;
+static const long m_fb_screensize = 128 * 128 * 2;
 struct termios m_orig_termios;
 // Async rendering variables
 uint16_t *m_back_buffer = NULL;
@@ -138,23 +136,6 @@ int p8_init()
             return 1;
         }
     }
-
-    if (ioctl(m_fb_fd, FBIOGET_FSCREENINFO, &m_fb_finfo) == -1) {
-        printf("Error reading fixed information\n");
-        close(m_fb_fd);
-        return 1;
-    }
-
-    if (ioctl(m_fb_fd, FBIOGET_VSCREENINFO, &m_fb_vinfo) == -1) {
-        printf("Error reading variable information\n");
-        close(m_fb_fd);
-        return 1;
-    }
-
-    printf("Framebuffer: %dx%d, %dbpp, line_length=%d\n", 
-           m_fb_vinfo.xres, m_fb_vinfo.yres, m_fb_vinfo.bits_per_pixel, m_fb_finfo.line_length);
-
-    m_fb_screensize = m_fb_finfo.line_length * m_fb_vinfo.yres;
 
     m_fb_ptr = (uint16_t *)mmap(0, m_fb_screensize, PROT_READ | PROT_WRITE, MAP_SHARED, m_fb_fd, 0);
     if (m_fb_ptr == MAP_FAILED) {
@@ -393,23 +374,12 @@ void* render_thread_func(void* arg)
                 // Copy back buffer to framebuffer
                 memcpy(m_fb_ptr, m_back_buffer, m_fb_screensize);
                 
-                // Calculate display region for ioctl
-                int scale_x = m_fb_vinfo.xres / P8_WIDTH;
-                int scale_y = m_fb_vinfo.yres / P8_HEIGHT;
-                int scale = (scale_x < scale_y) ? scale_x : scale_y;
-                if (scale < 1) scale = 1;
-                
-                int display_width = P8_WIDTH * scale;
-                int display_height = P8_HEIGHT * scale;
-                int offset_x = (m_fb_vinfo.xres - display_width) / 2;
-                int offset_y = (m_fb_vinfo.yres - display_height) / 2;
-                
-                // Trigger display update with ioctl
+                // Trigger display update with ioctl (128x128 full screen)
                 struct fb_fillrect arg = {
-                    .dx = offset_x,
-                    .dy = offset_y,
-                    .width = display_width,
-                    .height = display_height,
+                    .dx = 0,
+                    .dy = 0,
+                    .width = 128,
+                    .height = 128,
                     .color = 0xffff,
                     .rop = 0
                 };
@@ -440,21 +410,7 @@ void p8_render()
         return;
     }
 
-    // Calculate integer scale factor for the display
-    int scale_x = m_fb_vinfo.xres / P8_WIDTH;
-    int scale_y = m_fb_vinfo.yres / P8_HEIGHT;
-    int scale = (scale_x < scale_y) ? scale_x : scale_y;
-    if (scale < 1) scale = 1;
-
-    // Calculate centering offsets
-    int display_width = P8_WIDTH * scale;
-    int display_height = P8_HEIGHT * scale;
-    int offset_x = (m_fb_vinfo.xres - display_width) / 2;
-    int offset_y = (m_fb_vinfo.yres - display_height) / 2;
-
-    // Clear the back buffer first (black background)
-    memset(m_back_buffer, 0, m_fb_screensize);
-    
+    // Direct 1:1 pixel mapping for 128x128 display
     for (int y = 0; y < P8_HEIGHT; y++)
     {
         for (int x = 0; x < P8_WIDTH; x++)
@@ -464,23 +420,8 @@ void p8_render()
             uint8_t index = color_get(PALTYPE_SCREEN, IS_EVEN(x) ? value & 0xF : value >> 4);
             uint16_t color = m_colors[index & 0xF];
 
-            // Convert to big-endian RGB565 to match Rust implementation
             uint16_t be_color = ((color & 0xFF) << 8) | ((color & 0xFF00) >> 8);
-
-            // Draw scaled pixel block to back buffer
-            for (int sy = 0; sy < scale; sy++) {
-                for (int sx = 0; sx < scale; sx++) {
-                    int fb_x = offset_x + x * scale + sx;
-                    int fb_y = offset_y + y * scale + sy;
-                    
-                    if (fb_x >= 0 && fb_x < m_fb_vinfo.xres && 
-                        fb_y >= 0 && fb_y < m_fb_vinfo.yres) {
-                        // Use proper stride (line_length in bytes / 2 for 16-bit pixels)
-                        int stride = m_fb_finfo.line_length / 2;
-                        m_back_buffer[fb_x + (fb_y * stride)] = be_color;
-                    }
-                }
-            }
+            m_back_buffer[x + (y * P8_WIDTH)] = be_color;
         }
     }
 
