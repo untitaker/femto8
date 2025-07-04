@@ -14,6 +14,7 @@
 #include <time.h>
 #include <math.h>
 #include <assert.h>
+#include <pthread.h>
 #ifdef OS_FREERTOS
 #include <FreeRTOS.h>
 #include <task.h>
@@ -87,6 +88,14 @@ struct fb_fix_screeninfo m_fb_finfo;
 uint16_t *m_fb_ptr = NULL;
 long m_fb_screensize = 0;
 struct termios m_orig_termios;
+// Async rendering variables
+uint16_t *m_back_buffer = NULL;
+pthread_t m_render_thread;
+pthread_mutex_t m_buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
+volatile bool m_render_thread_running = false;
+volatile bool m_frame_ready = false;
+// Forward declaration
+void* render_thread_func(void* arg);
 #else
 SemaphoreHandle_t m_drawSemaphore;
 #endif
@@ -155,6 +164,26 @@ int p8_init()
     }
 
     memset(m_fb_ptr, 0, m_fb_screensize);
+    
+    // Allocate back buffer for async rendering
+    m_back_buffer = (uint16_t *)malloc(m_fb_screensize);
+    if (m_back_buffer == NULL) {
+        printf("Error: failed to allocate back buffer\n");
+        munmap(m_fb_ptr, m_fb_screensize);
+        close(m_fb_fd);
+        return 1;
+    }
+    memset(m_back_buffer, 0, m_fb_screensize);
+    
+    // Start background render thread
+    m_render_thread_running = true;
+    if (pthread_create(&m_render_thread, NULL, render_thread_func, NULL) != 0) {
+        printf("Error: failed to create render thread\n");
+        free(m_back_buffer);
+        munmap(m_fb_ptr, m_fb_screensize);
+        close(m_fb_fd);
+        return 1;
+    }
     
     // Set up keyboard input (raw mode)
     tcgetattr(STDIN_FILENO, &m_orig_termios);
@@ -298,6 +327,16 @@ int p8_shutdown()
 
     free(m_memory);
 #elif defined(FRAMEBUFFER)
+    // Stop background render thread
+    m_render_thread_running = false;
+    pthread_join(m_render_thread, NULL);
+    
+    // Cleanup async rendering resources
+    if (m_back_buffer != NULL) {
+        free(m_back_buffer);
+    }
+    pthread_mutex_destroy(&m_buffer_mutex);
+    
     if (m_fb_ptr != MAP_FAILED) {
         munmap(m_fb_ptr, m_fb_screensize);
     }
@@ -341,10 +380,65 @@ void p8_render()
     SDL_Flip(m_screen);
 }
 #elif defined(FRAMEBUFFER)
+// Background thread for async framebuffer rendering
+void* render_thread_func(void* arg)
+{
+    while (m_render_thread_running)
+    {
+        if (m_frame_ready)
+        {
+            pthread_mutex_lock(&m_buffer_mutex);
+            if (m_frame_ready) // Double-check inside lock
+            {
+                // Copy back buffer to framebuffer
+                memcpy(m_fb_ptr, m_back_buffer, m_fb_screensize);
+                
+                // Calculate display region for ioctl
+                int scale_x = m_fb_vinfo.xres / P8_WIDTH;
+                int scale_y = m_fb_vinfo.yres / P8_HEIGHT;
+                int scale = (scale_x < scale_y) ? scale_x : scale_y;
+                if (scale < 1) scale = 1;
+                
+                int display_width = P8_WIDTH * scale;
+                int display_height = P8_HEIGHT * scale;
+                int offset_x = (m_fb_vinfo.xres - display_width) / 2;
+                int offset_y = (m_fb_vinfo.yres - display_height) / 2;
+                
+                // Trigger display update with ioctl
+                struct fb_fillrect arg = {
+                    .dx = offset_x,
+                    .dy = offset_y,
+                    .width = display_width,
+                    .height = display_height,
+                    .color = 0xffff,
+                    .rop = 0
+                };
+                
+                ioctl(m_fb_fd, FBIORECT_DISPLAY, &arg);
+                
+                m_frame_ready = false; // Mark frame as processed
+            }
+            pthread_mutex_unlock(&m_buffer_mutex);
+        }
+        
+        // Small sleep to prevent busy waiting
+        usleep(1000); // 1ms
+    }
+    
+    return NULL;
+}
+
 void p8_render()
 {
     sprintf(m_str_buffer, "%d", (int)m_actual_fps);
     draw_text(m_str_buffer, 0, 0, 1);
+
+    // Try to acquire lock for rendering - if busy, drop frame
+    if (pthread_mutex_trylock(&m_buffer_mutex) != 0)
+    {
+        // Frame dropping: if background thread is busy, skip this frame
+        return;
+    }
 
     // Calculate integer scale factor for the display
     int scale_x = m_fb_vinfo.xres / P8_WIDTH;
@@ -358,8 +452,8 @@ void p8_render()
     int offset_x = (m_fb_vinfo.xres - display_width) / 2;
     int offset_y = (m_fb_vinfo.yres - display_height) / 2;
 
-    // Clear the screen first (black background)
-    memset(m_fb_ptr, 0, m_fb_screensize);
+    // Clear the back buffer first (black background)
+    memset(m_back_buffer, 0, m_fb_screensize);
     
     for (int y = 0; y < P8_HEIGHT; y++)
     {
@@ -373,7 +467,7 @@ void p8_render()
             // Convert to big-endian RGB565 to match Rust implementation
             uint16_t be_color = ((color & 0xFF) << 8) | ((color & 0xFF00) >> 8);
 
-            // Draw scaled pixel block
+            // Draw scaled pixel block to back buffer
             for (int sy = 0; sy < scale; sy++) {
                 for (int sx = 0; sx < scale; sx++) {
                     int fb_x = offset_x + x * scale + sx;
@@ -383,24 +477,17 @@ void p8_render()
                         fb_y >= 0 && fb_y < m_fb_vinfo.yres) {
                         // Use proper stride (line_length in bytes / 2 for 16-bit pixels)
                         int stride = m_fb_finfo.line_length / 2;
-                        m_fb_ptr[fb_x + (fb_y * stride)] = be_color;
+                        m_back_buffer[fb_x + (fb_y * stride)] = be_color;
                     }
                 }
             }
         }
     }
 
-    // Trigger display update with ioctl
-    struct fb_fillrect arg = {
-        .dx = offset_x,
-        .dy = offset_y,
-        .width = display_width,
-        .height = display_height,
-        .color = 0xffff,
-        .rop = 0
-    };
+    // Signal that frame is ready for display
+    m_frame_ready = true;
     
-    ioctl(m_fb_fd, FBIORECT_DISPLAY, &arg);
+    pthread_mutex_unlock(&m_buffer_mutex);
 }
 #else
 
