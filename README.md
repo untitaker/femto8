@@ -34,7 +34,7 @@ In order to cross-compile to ARMv7:
 ```
 wget https://musl.cc/arm-linux-musleabi-cross.tgz
 tar xvzf ./arm-linux-musleabi-cross.tgz
-CC=./arm-linux-musleabi-cross/bin/arm-linux-musleabi-cc CXX=./arm-linux-musleabi-cross/bin/arm-linux-musleabi-g++ make 
+CC=./arm-linux-musleabi-cross/bin/arm-linux-musleabi-cc CXX=./arm-linux-musleabi-cross/bin/arm-linux-musleabi-g++ CFLAGS=-static make 
 ```
 
 ### Usage

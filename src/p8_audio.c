@@ -144,10 +144,12 @@ musicstate_t m_music_state;
 SDL_AudioSpec m_audio_spec;
 #endif
 
+#ifdef SDL
 void audio_callback(void *userdata, uint8_t *cbuffer, int length)
 {
     render_sounds((int16_t *)cbuffer, length / sizeof(int16_t));
 }
+#endif
 
 void audio_init()
 {

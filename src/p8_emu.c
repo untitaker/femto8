@@ -607,8 +607,13 @@ void p8_handle_keyboard_input()
     timeout.tv_sec = 0;
     timeout.tv_usec = 0;
     
+    // Track if we have input this frame for proper key release detection
+    static bool had_input_this_frame = false;
+    had_input_this_frame = false;
+    
     while (select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout) > 0) {
         if (read(STDIN_FILENO, &ch, 1) == 1) {
+            had_input_this_frame = true;
             switch (ch) {
                 case 27: // ESC sequence
                     if (read(STDIN_FILENO, &ch, 1) == 1 && ch == '[') {
@@ -651,13 +656,21 @@ void p8_handle_keyboard_input()
         timeout.tv_usec = 0;
     }
     
-    // Clear button states (since we don't track key releases in this simple implementation)
-    // This makes buttons act as "pressed this frame" rather than "held down"
-    static int frame_counter = 0;
-    frame_counter++;
-    if (frame_counter > 2) { // Hold buttons for a few frames
+    // Handle key release detection for proper long-press support
+    static int no_input_frames = 0;
+    
+    // Track consecutive frames without input
+    if (had_input_this_frame) {
+        no_input_frames = 0;
+    } else {
+        no_input_frames++;
+    }
+    
+    // If we haven't had input for several frames, clear button states
+    // This allows for proper key release detection while maintaining long-press
+    if (no_input_frames > 3) {
         m_buttons[0] = 0;
-        frame_counter = 0;
+        no_input_frames = 0;
     }
 }
 #endif
