@@ -2,7 +2,13 @@
 
 femto8 is an open-source reimplementation of the [PICO-8](https://www.lexaloffle.com/pico-8.php) fantasy console, designed specifically for embedded systems with smaller CPUs and less memory. It provides a platform to play PICO-8 games on devices with resource constraints, making it ideal for environments with limited hardware capabilities.
 
-This fork has been adapted for the [TP-Link M7350](https://github.com/m0veax/tplink_m7350) so that it uses the device's framebuffer instead of SDL, no audio, and uses the console for input.
+This fork has been adapted for the [TP-Link M7350](https://github.com/m0veax/tplink_m7350) so that it uses the device's framebuffer instead of SDL. The display is exactly 128x128.
+
+Things that do not work as well as they should:
+
+* femto8 cannot open some newer cartridges.
+* There is no audio at all.
+* The emulator has to be launched from root shell, and input is provided via the same shell. [Information on how to get a root shell](https://github.com/m0veax/tplink_m7350)
 
 ### Acknowledgment
 
