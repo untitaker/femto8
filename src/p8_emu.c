@@ -33,9 +33,11 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <linux/fb.h>
+#include <linux/input.h>
 #include <fcntl.h>
 #include <termios.h>
 #include <sys/select.h>
+#include <errno.h>
 
 #define FBIORECT_DISPLAY 0x4619
 #else
@@ -92,6 +94,11 @@ pthread_t m_render_thread;
 pthread_mutex_t m_buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile bool m_render_thread_running = false;
 volatile bool m_frame_ready = false;
+// Input device file descriptors
+int m_input_event0_fd = -1;
+int m_input_event1_fd = -1;
+// Button state from input events
+uint8_t m_input_event_buttons = 0;
 // Forward declaration
 void* render_thread_func(void* arg);
 #else
@@ -173,6 +180,16 @@ int p8_init()
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    
+    const char *devices[] = {"/dev/input/event0", "/dev/input/event1"};
+    int *fds[] = {&m_input_event0_fd, &m_input_event1_fd};
+    
+    for (int i = 0; i < 2; i++) {
+        *fds[i] = open(devices[i], O_RDONLY | O_NONBLOCK);
+        if (*fds[i] < 0) {
+            printf("Warning: could not open %s: %s\n", devices[i], strerror(errno));
+        }
+    }
 #else
     m_drawSemaphore = xSemaphoreCreateBinary();
 
@@ -323,6 +340,12 @@ int p8_shutdown()
     }
     if (m_fb_fd != -1) {
         close(m_fb_fd);
+    }
+    int *fds[] = {&m_input_event0_fd, &m_input_event1_fd};
+    for (int i = 0; i < 2; i++) {
+        if (*fds[i] >= 0) {
+            close(*fds[i]);
+        }
     }
     // Restore terminal settings
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &m_orig_termios);
@@ -624,82 +647,71 @@ void p8_render()
 #endif
 
 #ifdef FRAMEBUFFER
+void p8_handle_input_events()
+{
+    uint8_t buffer[32];
+    int fds[] = {m_input_event0_fd, m_input_event1_fd};
+    
+    for (int i = 0; i < 2; i++) {
+        if (fds[i] >= 0) {
+            while (read(fds[i], buffer, sizeof(buffer)) == sizeof(buffer)) {
+                if (buffer[12] == 0) {
+                    if (i == 0) {
+                        m_input_event_buttons &= ~BUTTON_ACTION1;
+                    } else {
+                        m_input_event_buttons &= ~BUTTON_ACTION2;
+                    }
+                } else {
+                    if (i == 0) {
+                        m_input_event_buttons |= BUTTON_ACTION1;
+                    } else {
+                        m_input_event_buttons |= BUTTON_ACTION2;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void p8_handle_keyboard_input()
 {
+    static uint8_t console_buttons = 0;
+    static int no_input_frames = 0;
     fd_set readfds;
-    struct timeval timeout;
-    char ch;
+    struct timeval timeout = {0, 0};
+    char ch, seq[3];
+    bool had_input = false;
     
+    console_buttons = 0;
     FD_ZERO(&readfds);
     FD_SET(STDIN_FILENO, &readfds);
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 0;
-    
-    // Track if we have input this frame for proper key release detection
-    static bool had_input_this_frame = false;
-    had_input_this_frame = false;
     
     while (select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout) > 0) {
-        if (read(STDIN_FILENO, &ch, 1) == 1) {
-            had_input_this_frame = true;
-            switch (ch) {
-                case 27: // ESC sequence
-                    if (read(STDIN_FILENO, &ch, 1) == 1 && ch == '[') {
-                        if (read(STDIN_FILENO, &ch, 1) == 1) {
-                            switch (ch) {
-                                case 'A': // Up arrow
-                                    update_buttons(0, 2, true);
-                                    break;
-                                case 'B': // Down arrow
-                                    update_buttons(0, 3, true);
-                                    break;
-                                case 'C': // Right arrow
-                                    update_buttons(0, 1, true);
-                                    break;
-                                case 'D': // Left arrow
-                                    update_buttons(0, 0, true);
-                                    break;
-                            }
-                        }
-                    }
-                    break;
-                case 'z':
-                case 'Z':
-                    update_buttons(0, 4, true);
-                    break;
-                case 'x':
-                case 'X':
-                    update_buttons(0, 5, true);
-                    break;
-                case 'q':
-                case 'Q':
-                    exit(0);
-                    break;
-            }
+        if (read(STDIN_FILENO, &ch, 1) != 1) break;
+        had_input = true;
+        
+        if (ch == 27 && read(STDIN_FILENO, seq, 2) == 2 && seq[0] == '[') {
+            console_buttons |= (seq[1] == 'A') ? BUTTON_UP :
+                              (seq[1] == 'B') ? BUTTON_DOWN :
+                              (seq[1] == 'C') ? BUTTON_RIGHT :
+                              (seq[1] == 'D') ? BUTTON_LEFT : 0;
+        } else if ((ch | 0x20) == 'z') {
+            console_buttons |= BUTTON_ACTION1;
+        } else if ((ch | 0x20) == 'x') {
+            console_buttons |= BUTTON_ACTION2;
+        } else if ((ch | 0x20) == 'q') {
+            exit(0);
         }
         
         FD_ZERO(&readfds);
         FD_SET(STDIN_FILENO, &readfds);
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 0;
     }
     
-    // Handle key release detection for proper long-press support
-    static int no_input_frames = 0;
+    no_input_frames = had_input ? 0 : no_input_frames + 1;
+    m_buttons[0] = (no_input_frames > 3) ? m_input_event_buttons : 
+                   (console_buttons | m_input_event_buttons);
     
-    // Track consecutive frames without input
-    if (had_input_this_frame) {
-        no_input_frames = 0;
-    } else {
-        no_input_frames++;
-    }
-    
-    // If we haven't had input for several frames, clear button states
-    // This allows for proper key release detection while maintaining long-press
-    if (no_input_frames > 3) {
-        m_buttons[0] = 0;
-        no_input_frames = 0;
-    }
+    if (no_input_frames > 3) no_input_frames = 0;
 }
 #endif
 
@@ -830,7 +842,7 @@ void p8_main_loop()
             }
         }
 #elif defined(FRAMEBUFFER)
-        // Handle keyboard input
+        p8_handle_input_events();
         p8_handle_keyboard_input();
 #endif
         p8_update_input();

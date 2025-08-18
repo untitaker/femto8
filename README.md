@@ -4,6 +4,10 @@ femto8 is an open-source reimplementation of the [PICO-8](https://www.lexaloffle
 
 This fork has been adapted for the [TP-Link M7350](https://github.com/m0veax/tplink_m7350) so that it uses the device's framebuffer instead of SDL. The display is exactly 128x128.
 
+## Controls
+
+On the TP-Link M7350 the input can be controlled from the terminal that femto8 is launched from. In addition, the power and menu buttons are mapped to X and O action buttons.
+
 Things that do not work as well as they should:
 
 * femto8 cannot open some newer cartridges.
